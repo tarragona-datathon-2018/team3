@@ -1,0 +1,598 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{left=20mm,top=20mm}
+
+\usepackage{longtable}
+\usepackage{tabularx} 
+\usepackage{rotating}
+
+\usepackage{pdflscape}
+\usepackage{tabulary}                                                           
+% Include the following packages 
+
+\usepackage{array}
+\usepackage{booktabs}  % for \toprule, \midrule, and \bottomrule macros 
+
+
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{color}
+%\usepackage{multirow}
+
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+
+
+
+
+\begin{document}
+\author{e-Health Unit, EURECAT}
+\title{---}
+\maketitle
+
+\SweaveOpts{concordance=TRUE}
+
+\tableofcontents
+
+\listoffigures
+% 
+\listoftables
+
+
+<<results=hide,echo=false, eval=TRUE>>=
+
+library(readr)
+library(moonBook)
+library(Hmisc)
+library(reshape2)
+
+#source(file='mainFunctionsMimics.R')
+
+
+# Install the "big R query" package, if neccessary by uncommenting the following two lines:
+#install.packages('devtools')
+devtools::install_github("rstats-db/bigrquery")
+
+library("bigrquery")
+project_id <- "datathon-tarragona-2018"
+options(httr_oauth_cache=FALSE)
+
+@
+\section{Introduction}
+Lactate can be a marker of anaerobic respiration and suggestive of hypo-perfusion in the setting of critical illness. However, there are patient's in whom we expect elevations in lactate that do not arise. These so-called lactate non-responders befuddle clinicians and cloud the diagnostic picture. Identification of the factors which drive this distinct phenotype would allow for more sophisticated risk stratification and alleviate the resource utilization associated with this diagnostic uncertainty
+
+
+
+\section{Preprocessing}
+
+\begin{itemize}
+
+\item Select patients with sepsis state equal to 1 (ANGUS)
+\item Get data including lactate data from labevents
+\item Filter patients with the itemid equal to 50813 (Lactate from blood)
+\item Get information about the icu stay in order to include patients with icu days xxxx
+\item Exclusion criteria included: (I) neonates; and (II) patients with missing data on arterial blood lactate.
+\item and additional filters
+
+\end{itemize}
+
+<<results=hide,echo=false, eval=FALSE>>=
+
+# get data
+
+# drugs
+
+# ROW_ID,
+# SUBJECT_ID,
+# HADM_ID,
+# ICUSTAY_ID,
+# ITEMID,
+# CHARTTIME,
+# STORETIME,
+# CGID,
+# VALUE
+# VALUENUM
+# VALUEUOM
+# ERROR
+# RESULTSTATUS
+# STOPPED
+
+
+# get data from LABEVENTS by filtering patients with IDITEM=50813
+
+run_query <- function(query){
+    data <- query_exec(query, project=project_id, use_legacy_sql = FALSE,max_pages = Inf)
+    return(data)
+}
+
+# run_query("
+# SELECT
+#   subject_id,
+#   hadm_id,
+#   icustay_id
+# FROM
+#   `physionet-data.mimiciii_clinical.labitems`
+# LIMIT 10
+# ")
+
+# ROW_ID	SUBJECT_ID	HADM_ID	ITEMID	CHARTTIME	VALUE	VALUENUM	VALUEUOM	FLAG
+
+data_lactate<-run_query("
+SELECT
+  subject_id,
+  hadm_id,
+charttime,
+  valuenum
+FROM
+  `physionet-data.mimiciii_clinical.labevents`
+WHERE
+itemid = 50813
+
+")
+
+# get data about icu stay
+
+#SUBJECT_ID	HADM_ID	ICUSTAY_ID	DBSOURCE	FIRST_CAREUNIT	LAST_CAREUNIT	FIRST_WARDID	LAST_WARDID	INTIME	OUTTIME	LOS
+
+data_icustay<-run_query("
+SELECT
+  subject_id,
+  hadm_id,
+  icustay_id,
+  dbsource,
+  first_careunit,
+  last_careunit
+  first_wardid,
+  last_wardid,
+  intime,
+  outtime,
+  los
+
+FROM
+  `physionet-data.mimiciii_clinical.icustays`
+")
+
+#SUBJECT_ID	HADM_ID	ADMITTIME	DISCHTIME	DEATHTIME	ADMISSION_TYPE	ADMISSION_LOCATION	DISCHARGE_LOCATION	INSURANCE	LANGUAGE	RELIGION	MARITAL_STATUS	ETHNICITY	EDREGTIME	EDOUTTIME	DIAGNOSIS	HOSPITAL_EXPIRE_FLAG	HAS_CHARTEVENTS_DATA
+
+
+
+data_admissions<-run_query("
+SELECT
+  subject_id,
+  hadm_id,
+  admittime,
+  dischtime,
+  deathtime,
+  admission_type
+
+FROM
+  `physionet-data.mimiciii_clinical.admissions`
+")
+
+
+data_firstday<-run_query("
+SELECT
+  subject_id,
+  hadm_id,
+  charttime,
+  lactate
+
+FROM
+  `physionet-data.mimiciii_derived.bloodgasfirstday`
+")
+
+#Row	ROW_ID	SUBJECT_ID	HADM_ID	SEQ_NUM	ICD9_CODE
+data_icd<-run_query("
+SELECT
+  subject_id,
+  hadm_id,
+  seq_num,
+  icd9_code
+
+FROM
+  `physionet-data.mimiciii_clinical.diagnoses_icd`
+")
+
+    
+
+data_sepsis <- read.delim("~/Documents/Projects/DATATHON/MIMIC/data/dataset_angus_sepsis_clinical.txt")
+
+colnames(data_sepsis)<-c('SUBJECT_ID','HADM_ID','ICUSTAY_ID','ANGUS')
+colnames(data_sepsis)<-tolower(colnames(data_sepsis))
+
+# data_clinical<-read.delim("~/Documents/Projects/DATATHON/MIMIC/data/dataset_trend_cancer_clinical_processed.txt")
+# colnames(data_clinical)<-tolower(colnames(data_clinical))
+
+data_sepsis_yes<-subset(data_sepsis,angus==1)
+
+data_sepsis_icu<-merge(data_sepsis_yes,data_icustay,by=c('subject_id','hadm_id','icustay_id'))
+
+
+
+data_sepsis_icu$hour_icu<- format(as.POSIXct(strptime(data_sepsis_icu$intime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%H:%M:%S")
+
+data_sepsis_icu$date_icu <- format(as.POSIXct(strptime(data_sepsis_icu$intime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%Y-%m-%d")
+
+
+data_sepsis_icu<- data_sepsis_icu[with(data_sepsis_icu, order(subject_id, date_icu,icustay_id,date_icu)),]
+# filter participants with only one input in icu
+
+data_sepsis_icu<-data_sepsis_icu[!duplicated(data_sepsis_icu[,c('subject_id','date_icu','icustay_id')],fromLast=FALSE),]
+
+
+# data_sepsis_icu_1 %>% select(icustay_id) %>% group_by(icustay_id) %>% summarize(n = n()) %>% filter(n > 1)
+
+data_sepsis_icu<-merge(data_sepsis_icu,data_firstday,by=c('subject_id','hadm_id'),all.x = TRUE)
+
+
+
+
+
+# 
+# # select only patients with one observatio
+# 
+# #merge clinical data with data_icustay'
+# 
+# data_icustay$hour_icu<- format(as.POSIXct(strptime(data_icustay$intime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%H:%M:%S")
+# 
+# data_icustay$date_icu <- format(as.POSIXct(strptime(data_icustay$intime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%Y-%m-%d")
+# 
+# # select the first sample 
+# 
+# table(data_icustay$subject_id,data_icustay$date_icu)
+# 
+# data_icustay<- data_icustay[with(ddata_icustay, order(subject_id, date_date)), ]
+# data_full_sepsis_first<-data_full_sepsis_first[!duplicated(data_full_sepsis_first[,c('subject_id','date_lactate')],fromLast=TRUE),] # keep last observation, approach to keep higher Activity values
+#   
+
+# exclude patients with missing values in lactate
+data_sepsis_icu_a<-subset(data_sepsis_icu,!is.na(lactate))
+
+save(data_sepsis_icu_a,file='data/data_sepsis_icu_a.RData')
+
+# remove unused datasets
+data_sepsis_yes<-NULL
+data_clinical<-NULL
+data_firstday<-NULL
+data_lactate<-NULL
+data_sepsis<-NULL
+data_sepsis_icu_1<-NULL
+data_icustay<-NULL
+
+@
+
+<<results=hide,echo=false, eval=FALSE>>=
+load(file='data/data_sepsis_icu_a.RData')
+
+data_sepsis_icu<-data_sepsis_icu_a
+
+
+#----------- filter data based on some icd criteria and create a numerical version of icd in order to filter data 
+
+data_icd_sepsis<-subset(data_icd,subject_id %in% unique(data_sepsis_icu$subject_id))
+
+data_icd_sepsis$icd9_code_num<-as.numeric(as.character(data_icd_sepsis$icd9_code))
+
+data_icd_sepsis_1<-subset(data_icd_sepsis,icd9_code_num >=14000 & icd9_code_num<=23929)
+length(unique(data_icd_sepsis_1$subject_id)) # 681
+
+data_icd_sepsis_2<-subset(data_icd_sepsis,icd9_code_num >=24900 & icd9_code_num<=25099)
+length(unique(data_icd_sepsis_2$subject_id)) #2875
+
+data_icd_sepsis_3<-subset(data_icd_sepsis,icd9_code_num >=57000 & icd9_code_num<=57399)
+length(unique(data_icd_sepsis_3$subject_id)) #19
+
+#----- exclude people from conditions 1, 2 and 3
+
+sj2del<-unique(c(unique(data_icd_sepsis_1$subject_id),unique(data_icd_sepsis_2$subject_id),unique(data_icd_sepsis_3$subject_id))) #--- 3410subject excluded
+
+data_sepsis_icu_icd<-subset(data_sepsis_icu,!subject_id %in% sj2del) #--- 5337 patients
+length(unique(data_sepsis_icu_icd$subject_id))
+
+#--------- merging with clinical data
+
+data_clinical<-read.delim("~/Documents/Projects/DATATHON/MIMIC/data/dataset_trend_cancer_clinical_processed.txt")
+colnames(data_clinical)<-tolower(colnames(data_clinical))
+
+# data_clinical<-subset(data_clinical,!is.na(gender))
+
+data_sepsis_icu_icd<-merge(data_sepsis_icu_icd,data_clinical,by=c('subject_id','hadm_id','icustay_id'),all.x = TRUE)
+
+data_sepsis_icu_icd$hour_lactate<- format(as.POSIXct(strptime(data_sepsis_icu_icd$charttime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%H:%M:%S")
+
+data_sepsis_icu_icd$date_lactate <- format(as.POSIXct(strptime(data_sepsis_icu_icd$charttime,"%Y-%m-%d %H:%M:%S",tz="")) ,format = "%Y-%m-%d")
+
+data_sepsis_icu_icd$timepoint_lactate<-difftime(as.POSIXct(data_sepsis_icu_icd$hour_lactate, format = '%H:%M:%S'), as.POSIXct(data_sepsis_icu_icd$hour_icu, format = '%H:%M:%S'), units = 'min') 
+
+
+#------------- some patients have lactate values recorded before the icu hour
+# > summary(as.numeric(data_sepsis_icu_icd$timepoint_lactate))
+#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# -1438.02  -304.30   -69.72   -75.63   188.00  1430.23 
+
+
+data_sepsis_icu_icd<-subset(data_sepsis_icu_icd,timepoint_lactate>=-360) # 5091
+
+data_sepsis_icu_icd<- data_sepsis_icu_icd[with(data_sepsis_icu_icd, order(subject_id, hadm_id, icustay_id,hour_lactate)),]
+
+#--- classify lactate
+
+
+  
+data_sepsis_icu_icd$typeLactate<-NA
+
+indlow<-which(data_sepsis_icu_icd$lactate<2)
+data_sepsis_icu_icd[indlow,'typeLactate']<-'low'
+
+indmedium<-which(data_sepsis_icu_icd$lactate>=2 & data_sepsis_icu_icd$lactate<=4)
+data_sepsis_icu_icd[indmedium,'typeLactate']<-'medium'
+
+indhigh<-which(data_sepsis_icu_icd$lactate>4)
+data_sepsis_icu_icd[indhigh,'typeLactate']<-'high'
+
+
+data_sepsis_icu_icd<-subset(data_sepsis_icu_icd,!is.na(gender))
+
+data_sepsis_icu_icd_b<-data_sepsis_icu_icd
+save(data_sepsis_icu_icd_b,file='data/data_sepsis_icu_icd_b.RData')
+
+@
+
+
+<<results=hide,echo=false, eval=FALSE>>=
+load(file='data/data_sepsis_icu_icd_b.RData')
+data_sepsis_icu_icd<-data_sepsis_icu_icd_b
+
+# n_sample<-data.frame(table(data_sepsis_icu_icd$subject_id))
+# 
+# sj_more1<-as.character(unique(subset(n_sample,Freq>1)$Var1))
+# 
+# data_sepsis_icu_icd<-subset(data_sepsis_icu_icd,subject_id %in%sj_more1) #3844
+
+# exclude people with one observation in lactate
+
+#--- compute baseline lactate
+data_sepsis_icu_icd<- data_sepsis_icu_icd[with(data_sepsis_icu_icd, order(subject_id, hadm_id, icustay_id,hour_lactate)),]
+data_sepsis_icu_icd_0<-data_sepsis_icu_icd[!duplicated(data_sepsis_icu_icd[,c('subject_id','hadm_id','icustay_id')],fromLast=FALSE),]
+data_sepsis_icu_icd_0$typeLactate_baseline<-data_sepsis_icu_icd_0$typeLactate
+data_sepsis_icu_icd<-merge(data_sepsis_icu_icd,data_sepsis_icu_icd_0[,c('subject_id','hadm_id','icustay_id','typeLactate_baseline')])
+
+
+
+#------- label patients according to their baseline lactate values
+
+library(ggplot2)
+dgr<-subset(data_sepsis_icu_icd,subject_id %in% unique(data_sepsis_icu_icd$subject_id)[1:10])
+ggplot(dgr, aes(timepoint_lactate, lactate)) + 
+    geom_line(aes(group=subject_id)) + 
+    geom_point(aes(group=subject_id,colour=typeLactate),size=2) + 
+   facet_wrap(~ subject_id,ncol=3)+theme_bw(base_size=22) 
+
+# select patients with lower lactate values at baseline who increased their lactate values during the first 24 hours
+
+#--- compute baseline lactate
+data_sepsis_icu_icd<- data_sepsis_icu_icd[with(data_sepsis_icu_icd, order(subject_id, hadm_id, icustay_id,hour_lactate)),]
+data_sepsis_icu_icd_0<-data_sepsis_icu_icd[!duplicated(data_sepsis_icu_icd[,c('subject_id','hadm_id','icustay_id')],fromLast=FALSE),]
+data_sepsis_icu_icd_0$lactate_bs<-data_sepsis_icu_icd_0$lactate
+data_sepsis_icu_icd<-merge(data_sepsis_icu_icd,data_sepsis_icu_icd_0[,c('subject_id','hadm_id','icustay_id','lactate_bs')])
+
+#---- identify last lactate
+
+data_sepsis_icu_icd<- data_sepsis_icu_icd[with(data_sepsis_icu_icd, order(subject_id, hadm_id, icustay_id,hour_lactate)),]
+data_sepsis_icu_icd_end<-data_sepsis_icu_icd[!duplicated(data_sepsis_icu_icd[,c('subject_id','hadm_id','icustay_id')],fromLast=TRUE),]
+data_sepsis_icu_icd_end$lactate_last<-data_sepsis_icu_icd_end$lactate
+
+data_sepsis_icu_icd<-merge(data_sepsis_icu_icd,data_sepsis_icu_icd_end[,c('subject_id','hadm_id','icustay_id','lactate_last')])
+
+data_sepsis_icu_icd$lactate_change<-data_sepsis_icu_icd$lactate_last-data_sepsis_icu_icd$lactate_bs
+data_sepsis_icu_icd$lactate_change_type<-NA 
+data_sepsis_icu_icd$lactate_change_type[which(data_sepsis_icu_icd$lactate_change<=0)]<-'improve'
+data_sepsis_icu_icd$lactate_change_type[which(data_sepsis_icu_icd$lactate_change>0)]<-'worsen'
+
+data_sepsis_icu_icd$timepoint<-data_sepsis_icu_icd$timepoint_lactate
+
+
+#--------exitus
+
+#-- exclude people whose mortality was later than 28 days
+
+data_sepsis_icu_icd$exitus_before28d<-FALSE
+data_sepsis_icu_icd$exitus_before28d[which(data_sepsis_icu_icd$mortality_time<=28)]<-TRUE
+data_sepsis_icu_icd$exitus_before28d[which(data_sepsis_icu_icd$mortality_time>28)]<-FALSE
+
+data_sepsis_icu_icd$exitus<-TRUE
+
+data_sepsis_icu_icd[which(is.na(data_sepsis_icu_icd$mortality_icu)),'exitus']<-FALSE
+
+library(nlme)
+flme1<-lme( lactate ~ timepoint +age_admission +gender + sofa_score + saps_score , random = ~1+timepoint|icustay_id,data=data_sepsis_icu_icd,method='ML',na.action = 'na.exclude')
+summary(flme1)
+anova(flme1)
+
+#----loess curve
+  # ploess<-ggplot(data=data_sepsis_icu_icd, aes(x=as.numeric(as.character(timepoint)), y=lactate)) + 
+  #   geom_smooth( method = "loess", size=2,level=0.95,aes(fill= gender,group=gender,colour=gender), alpha=0.2,show.legend=TRUE)+
+  #   geom_hline(yintercept=2, linetype="dotted",size=2)+
+  #   xlab('minutes from baseline')+ 
+  #   ylab('24-hour lactate') + 
+  #   # scale_color_discrete(name ="Diagnosis groups:")+
+  #   # scale_fill_discrete(name ="Diagnosis groups:")+
+  #   
+  #   # scale_color_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+  #   # scale_fill_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+  #     theme_bw() +
+  #   theme(plot.title = element_text(size = 18, family = "Helvetica", face = "bold"),
+  #         text = element_text(size = 18, family = "Helvetica"),
+  #         axis.title = element_text(face="bold"),
+  #         axis.text.x=element_text(size = 18))+
+  #   theme(legend.position = "top")+
+  #   scale_x_continuous(breaks=seq(as.numeric(min(data_sepsis_icu_icd$timepoint,na.rm = TRUE)),as.numeric(max(data_sepsis_icu_icd$timepoint)),360))
+  # 
+  ploess_exitus<-ggplot(data=data_sepsis_icu_icd, aes(x=as.numeric(as.character(timepoint)), y=lactate)) + 
+    geom_smooth( method = "loess", size=2,level=0.95,aes(fill= exitus,group=exitus,colour=exitus), alpha=0.2,show.legend=TRUE)+
+    geom_hline(yintercept=2, linetype="dotted",size=2)+
+    xlab('minutes from baseline')+ 
+    ylab('24-hour lactate') + 
+    # scale_color_discrete(name ="Diagnosis groups:")+
+    # scale_fill_discrete(name ="Diagnosis groups:")+
+    
+    # scale_color_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+    # scale_fill_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+      theme_bw() +
+    theme(plot.title = element_text(size = 18, family = "Helvetica", face = "bold"),
+          text = element_text(size = 18, family = "Helvetica"),
+          axis.title = element_text(face="bold"),
+          axis.text.x=element_text(size = 18))+
+    theme(legend.position = "top")+
+    scale_x_continuous(breaks=seq(min(as.numeric(data_sepsis_icu_icd$timepoint),na.rm = TRUE),as.numeric(max(data_sepsis_icu_icd$timepoint)),360))
+  
+  ploess_exitus_before28d<-ggplot(data=data_sepsis_icu_icd, aes(x=as.numeric(as.character(timepoint)), y=lactate)) + 
+    geom_smooth( method = "loess", size=2,level=0.95,aes(fill= exitus_before28d,group=exitus_before28d,colour=exitus_before28d), alpha=0.2,show.legend=TRUE)+
+    geom_hline(yintercept=2, linetype="dotted",size=2)+
+    xlab('minutes from baseline')+ 
+    ylab('24-hour lactate') + 
+    # scale_color_discrete(name ="Diagnosis groups:")+
+    # scale_fill_discrete(name ="Diagnosis groups:")+
+    
+    # scale_color_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+    # scale_fill_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+      theme_bw() +
+    theme(plot.title = element_text(size = 18, family = "Helvetica", face = "bold"),
+          text = element_text(size = 18, family = "Helvetica"),
+          axis.title = element_text(face="bold"),
+          axis.text.x=element_text(size = 18))+
+    theme(legend.position = "top")+
+    scale_x_continuous(breaks=seq(-360,as.numeric(max(data_sepsis_icu_icd$timepoint)),360))
+  data_sepsis_icu_icd_c<-data_sepsis_icu_icd
+  
+save(data_sepsis_icu_icd_c,file='data/data_sepsis_icu_icd_c.RData')  #5074
+
+@
+
+
+\section{Stratification}
+
+
+
+<<results=hide,echo=false, eval=FALSE>>=
+
+
+#three different ranges of lactate levels: low (below 2.0 mmol/L), medium (between 2.0 mmol/L and 4.0 mmol/L), and high (above 4.0 mmol/L).
+
+load(file='data/data_sepsis_icu_icd_c.RData')
+data_sepsis_icu_icd<-  data_sepsis_icu_icd_c
+
+#----First group: lowerlactate + alive
+
+d_lower<-subset(data_sepsis_icu_icd,typeLactate_baseline=='low')
+#write.csv(data_sepsis_icu_icd,file='data/data_sepsis_icu_icd.csv')
+
+# > quantile(d_lower$elixhauser_sid30)
+#   0%  25%  50%  75% 100% 
+#  -17    8   15   24   58 
+
+d_lower$elixhauser_sid30_bin<-NA
+d_lower$elixhauser_sid30_bin[which(d_lower$elixhauser_sid30<=15)]<-'elixhauser<=15'
+d_lower$elixhauser_sid30_bin[which(d_lower$elixhauser_sid30>15)]<-'elixhauser>15'
+
+d_lower$sofa_score_bin<-cut(d_lower$sofa_score, breaks=c(0,5,10,17), include.lowest=TRUE)
+
+
+p.lower<-ggplot(data=d_lower, aes(x=as.numeric(as.character(timepoint)), y=lactate)) + 
+    geom_smooth( method = "loess", size=2,level=0.95,aes(fill= exitus_before28d,group=exitus_before28d,colour=exitus_before28d), alpha=0.2,show.legend=TRUE)+
+    geom_hline(yintercept=2, linetype="dotted",size=2)+
+   geom_vline(xintercept=360, linetype="dotted",size=2)+
+  facet_grid(sofa_score_bin~elixhauser_sid30_bin,scales = 'free')+
+    xlab('minutes from baseline')+ 
+    ylab('24-hour lactate') + 
+    # scale_color_discrete(name ="Diagnosis groups:")+
+    # scale_fill_discrete(name ="Diagnosis groups:")+
+    
+    # scale_color_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+    # scale_fill_manual(name ="Diagnosis groups:",values = c("#00AFBB", "#E7B800", "#FC4E07"))+
+      theme_bw() +
+    theme(plot.title = element_text(size = 14, family = "Helvetica", face = "bold"),
+          text = element_text(size = 14, family = "Helvetica"),
+          axis.title = element_text(face="bold"),
+          axis.text.x=element_text(size = 14))+
+    theme(legend.position = "top")+
+    scale_x_continuous(breaks=seq(-360,as.numeric(max(data_sepsis_icu_icd$timepoint)),360))
+
+ file.pdf<-paste('images/plower_comorbidity_sofa.png',sep='')
+  png(file.pdf,width=1500, height = 1000,res=100) 
+  print(p.lower )
+  dev.off()
+  
+
+save(d_lower,file='data/d_lower.RData')
+
+@
+
+\section{Longitudinal modelling}
+
+
+
+<<results=tex,echo=false, eval=TRUE>>=
+
+load(file='data/d_lower.RData') #2595
+
+
+library(nlme)
+
+interventions_6h<-read.csv("~/Documents/Projects/DATATHON/MIMIC/data/interventions_6h.csv")
+vlsf6h <- read.csv("~/Documents/Projects/DATATHON/MIMIC/data/vlsf6h.csv")
+
+
+
+d_lower<-merge(d_lower,interventions_6h,by=c('icustay_id'),all.x = TRUE)
+
+d_lower<-merge(d_lower,vlsf6h ,by=c('subject_id', 'hadm_id', 'icustay_id'),all.x = TRUE)
+
+#d_lower_red<-subset(d_lower,sofa_score_bin %in% c('[0,5]','(5,10]'))
+flme_low_full<-lme( lactate ~ timepoint +age_admission +  sofa_score_bin + vent_6hours + crrt_6hours + vp_6hours + creatinine_max + glucose_min_y + hemoglobin_min + platelet_min + potassium_min  + ptt_max + inr_max + pt_max  + sodium_min + bun_max + wbc_max, random = ~1|icustay_id,data=d_lower,method='ML',na.action = 'na.exclude')
+# summary(flme_low_full)
+# anova(flme_low_full)
+
+
+
+
+#-----people with higher lactate
+
+load(file='data/data_sepsis_icu_icd_c.RData')
+data_sepsis_icu_icd<-  data_sepsis_icu_icd_c
+
+#----First group: lowerlactate + alive
+
+d_higher<-subset(data_sepsis_icu_icd,typeLactate_baseline %in% c('medium','high'))
+
+d_higher<-merge(d_higher,interventions_6h,by=c('icustay_id'),all.x = TRUE)
+
+d_higher<-merge(d_higher,vlsf6h ,by=c('subject_id', 'hadm_id', 'icustay_id'),all.x = TRUE)
+
+d_higher$elixhauser_sid30_bin<-NA
+d_higher$elixhauser_sid30_bin[which(d_higher$elixhauser_sid30<=15)]<-'elixhauser<=15'
+d_higher$elixhauser_sid30_bin[which(d_higher$elixhauser_sid30>15)]<-'elixhauser>15'
+
+d_higher$sofa_score_bin<-cut(d_higher$sofa_score, breaks=c(0,5,10,18), include.lowest=TRUE)
+
+flme_high_full<-lme( lactate ~ timepoint +age_admission +  sofa_score_bin + vent_6hours + crrt_6hours + vp_6hours + creatinine_max + glucose_min_y + hemoglobin_min + platelet_min + potassium_min  + ptt_max + inr_max + pt_max  + sodium_min + bun_max + wbc_max, random = ~1|icustay_id,data=d_higher,method='ML',na.action = 'na.exclude')
+# summary(flme_high_full)
+# anova(flme_high_full)
+
+library(stargazer)
+#cov.names<-c('time','time2','Constant',fm.dbp.hypertension)
+stargazer(flme_low_full,flme_high_full,  title="Regression Results", align=TRUE, ci=TRUE,ci.level=0.95,star.cutoffs = c(0.05, 0.01, 0.001), single.row=TRUE,type='latex',label='table:lactate_models',dep.var.caption  = "Populations:", column.labels  = c("Lower", "Higher"),omit.stat=c("LL","ser","f"), no.space=TRUE)
+
+### save datasets
+
+write.csv(d_lower,file='data/d_lower_last.csv') # 2595
+write.csv(d_higher,file='data/d_higher_last.csv') #2659
+
+
+@
+
+\end{document}
